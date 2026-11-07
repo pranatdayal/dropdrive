@@ -47,6 +47,8 @@ CHUNK = 64 * 1024 * 1024        # bytes sent to Google per request (multiple of 
 BLOCK = 4 * 1024 * 1024         # Dropbox content-hash block size (fixed by Dropbox)
 READ = 8 * 1024 * 1024          # socket read size
 TIMEOUT = 300                   # seconds without data before a connection counts as dead
+SEEK_RATE = 10 * 1024 * 1024    # slowest rate Dropbox skips ahead (bytes/s) before sending a resumed file
+GiB = 1024 ** 3
 MAX_FAILS = 60                  # consecutive errors before giving up on a file
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -243,16 +245,16 @@ class Response:
         return self.data.decode("utf-8", "replace")[:500]
 
 
-def _open(method, url, body=None, headers=None):
+def _open(method, url, body=None, headers=None, timeout=None):
     u = urlsplit(url)
     scheme, netloc = u.scheme, u.netloc
     path = u.path + ("?" + u.query if u.query else "")
     if TEST_SERVER and scheme == "https":
         scheme, path, netloc = "http", "/" + netloc + path, TEST_SERVER
     if scheme == "http":
-        conn = http.client.HTTPConnection(netloc, timeout=TIMEOUT)
+        conn = http.client.HTTPConnection(netloc, timeout=timeout or TIMEOUT)
     else:
-        conn = http.client.HTTPSConnection(netloc, timeout=TIMEOUT, context=ssl_context())
+        conn = http.client.HTTPSConnection(netloc, timeout=timeout or TIMEOUT, context=ssl_context())
     h = {"User-Agent": "Dropdrive/" + VERSION}
     h.update(headers or {})
     conn.request(method, path, body=body, headers=h)
@@ -502,8 +504,18 @@ def resolve_source(link):
     return meta.get("name", "Dropbox folder"), items
 
 
+def dropbox_seek_wait(offset):
+    """Longest wait for the first byte when Dropbox resumes a file at `offset`."""
+    return TIMEOUT + offset / SEEK_RATE
+
+
 class DropboxStream:
-    """Reads one file from a Dropbox link, starting at a byte offset."""
+    """Reads one file from a Dropbox link, starting at a byte offset.
+
+    Dropbox reads through the file up to `offset` before it sends the first byte of a
+    resumed download (measured ~1 GiB per 15-70 s), so the first read gets a longer
+    timeout that grows with the offset; later reads use the normal TIMEOUT.
+    """
 
     def __init__(self, link, dbx_path, offset):
         arg = {"url": link}
@@ -512,8 +524,9 @@ class DropboxStream:
         h = {"Authorization": "Bearer " + token(DBX_REMOTE), "Dropbox-API-Arg": json.dumps(arg)}
         if offset:
             h["Range"] = "bytes=%d-" % offset
+        self.pending = b""
         self.conn, self.resp = _open("POST", "https://content.dropboxapi.com/2/sharing/get_shared_link_file",
-                                     headers=h)
+                                     headers=h, timeout=dropbox_seek_wait(offset))
         st = self.resp.status
         if st not in (200, 206):
             r = Response(st, self.resp.headers, self.resp.read(2000))
@@ -533,9 +546,17 @@ class DropboxStream:
                 if not b:
                     raise Transient("Dropbox connection ended early")
                 left -= len(b)
+        elif offset:
+            self.pending = self.resp.read(1)
+            if not self.pending:
+                self.close()
+                raise Transient("Dropbox connection ended early")
+        if self.conn.sock:
+            self.conn.sock.settimeout(TIMEOUT)
 
     def read(self, n):
-        buf = bytearray()
+        buf = bytearray(self.pending)
+        self.pending = b""
         while len(buf) < n:
             b = self.resp.read(min(n - len(buf), READ))
             if not b:
@@ -927,7 +948,14 @@ def run_job(job, idx, progress):
                 verify = False
                 hasher.close()
                 start = target
+        if start > GiB:
+            progress.note("Waiting for Dropbox to skip ahead to %s before it sends anything "
+                          "(usually a few minutes; giving it up to %s)..."
+                          % (size_str(start), duration_str(dropbox_seek_wait(start))), kind=info)
+        t = time.time()
         s = DropboxStream(job.link, job.dbx_path, start)
+        if time.time() - t > 30:
+            log("dropbox took %ds to start sending at %d" % (time.time() - t, start))
         left = target - start
         while left:
             b = s.read(min(left, READ))

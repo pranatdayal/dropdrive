@@ -46,7 +46,7 @@ GD_REMOTE = "dropdrive-google"
 CHUNK = 64 * 1024 * 1024        # bytes sent to Google per request (multiple of 256 KiB)
 BLOCK = 4 * 1024 * 1024         # Dropbox content-hash block size (fixed by Dropbox)
 READ = 8 * 1024 * 1024          # socket read size
-TIMEOUT = 120                   # seconds without data before a connection counts as dead
+TIMEOUT = 300                   # seconds without data before a connection counts as dead
 MAX_FAILS = 60                  # consecutive errors before giving up on a file
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -398,7 +398,7 @@ def token(remote):
     if TEST_TOKEN:
         return TEST_TOKEN
     cached = _tokens.get(remote)
-    if cached and cached[1] - time.time() > 300:
+    if cached and cached[1] - time.time() > 60:
         return cached[0]
     for _ in range(4):
         # Any API call through rclone renews an expired token and writes it back to the config.
@@ -412,7 +412,7 @@ def token(remote):
             _tokens[remote] = (tok["access_token"], time.time() + 10 ** 9)
             return tok["access_token"]
         left = exp - time.time()
-        if left > 300:
+        if left > 60:
             _tokens[remote] = (tok["access_token"], exp)
             return tok["access_token"]
         if left > 0:

@@ -395,12 +395,17 @@ def _expiry_ts(s):
         return None
 
 
+# rclone only renews a token in its last ~10 s, so keep using it until then; waiting
+# longer than that stalls the open Dropbox download long enough for Dropbox to drop it.
+RENEW_AT = 15
+
+
 def token(remote):
     """A valid access token for a signed-in account, renewed through rclone when close to expiry."""
     if TEST_TOKEN:
         return TEST_TOKEN
     cached = _tokens.get(remote)
-    if cached and cached[1] - time.time() > 60:
+    if cached and cached[1] - time.time() > RENEW_AT:
         return cached[0]
     for _ in range(4):
         # Any API call through rclone renews an expired token and writes it back to the config.
@@ -414,7 +419,7 @@ def token(remote):
             _tokens[remote] = (tok["access_token"], time.time() + 10 ** 9)
             return tok["access_token"]
         left = exp - time.time()
-        if left > 60:
+        if left > RENEW_AT:
             _tokens[remote] = (tok["access_token"], exp)
             return tok["access_token"]
         if left > 0:

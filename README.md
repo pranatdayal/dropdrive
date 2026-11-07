@@ -2,6 +2,8 @@
 
 Copy big files from a **Dropbox link** straight into a **Google Drive folder**, on a Mac.
 
+> **One direction only: Dropbox → Google Drive.** It can't copy from Google Drive to Dropbox (see [Possible improvements](#possible-improvements)).
+
 - **No disk space needed.** Files stream through your Mac without being saved, so a 200 GB video works on a laptop with 20 GB free.
 - **Survives interruptions.** Wi-Fi drops, Google hiccups, or a closed window don't lose your progress. Run Dropdrive again and it continues from where Google Drive left off.
 - **Checks every file.** When Dropbox provides a fingerprint for a file, Dropdrive confirms the copy in Google Drive matches it exactly.
@@ -135,6 +137,22 @@ python3 tests/test_engine.py
 ```
 
 The tests run the transfer engine against local mock Dropbox and Google servers. The mocks inject dropped connections, partial chunk commits, 503s, a server that ignores `Range`, a lost upload session, a hash mismatch, and a give-up-then-resume cycle, and the tests check the uploaded bytes and content hash. No network or accounts are needed.
+
+### Possible improvements
+
+**Google Drive → Dropbox (reverse direction).** Not built yet. The transfer engine would carry over with a new source and destination:
+
+- **Source:** Drive's `files.get?alt=media` supports `Range`, so downloads can restart at any byte. Drive provides `md5Checksum`, so files would be MD5-checked instead of using the Dropbox content hash.
+- **Destination:** Dropbox upload sessions (`upload_session/start`, `append_v2`, `finish`). When a chunk fails, Dropbox's `incorrect_offset` error returns the offset it actually has, so resuming works the same way it does with Drive's resumable upload today.
+- **Storage caveat to surface in the app:** files uploaded into a Dropbox shared folder count against the uploader's quota, and against every member's. Uploading through a Dropbox **File request** link counts against the requester's quota instead, which is usually what people want. Free Dropbox accounts have 2 GB.
+- **Limits:** Dropbox caps uploads at 350 GB per file. Google may temporarily block downloads of a file that's been downloaded heavily.
+- **UI:** add a direction choice to the start menu. The progress, resume and verification code stay shared.
+
+Other ideas:
+
+- Copy several files at once, for faster total time on fast connections.
+- A small double-clickable app instead of the Terminal window.
+- Support for Dropbox folders in your own account, not just shared links.
 
 ### Publishing
 
